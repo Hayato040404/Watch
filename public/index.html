@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>同時視聴（ローカル優先WebRTC）</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    body { margin: 0; padding: 16px; max-width: 960px; margin-inline: auto; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    h1 { font-size: 20px; margin: 0; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 12px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    input[type="text"] { padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 16px; }
+    button { padding: 10px 14px; border: 0; border-radius: 10px; font-size: 15px; cursor: pointer; }
+    video { width: 100%; max-height: 60vh; background: #000; border-radius: 12px; }
+    .small { font-size: 12px; color: #666; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .muted { opacity: .7; }
+    .qr { display: grid; place-items: center; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>同時視聴（同一Wi‑Fi最適化 / WebRTC）</h1>
+    <div class="small">Render等にデプロイ可・P2P（少人数向け）</div>
+  </header>
+
+  <div class="card">
+    <div class="row">
+      <label><input type="radio" name="role" value="owner" checked> オーナー</label>
+      <label><input type="radio" name="role" value="viewer"> 視聴者</label>
+      <input id="roomId" type="text" placeholder="ルームID（例: 0429）" />
+      <button id="btnJoin">入室</button>
+    </div>
+    <div class="row small muted">
+      同じWi‑Fi内だとWebRTCがローカル候補（mDNS/host）を優先して低遅延になりやすいです。外出先でもOK。
+    </div>
+  </div>
+
+  <div class="card owner-only">
+    <div class="row">
+      <button id="btnShareScreen">画面を共有</button>
+      <button id="btnShareCamera">カメラを共有（スマホ可）</button>
+      <button id="btnStop" disabled>停止</button>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="small">送信プレビュー</div>
+        <video id="preview" playsinline autoplay muted></video>
+      </div>
+      <div>
+        <div class="small">QRで視聴者を招待（同一LANで便利）</div>
+        <div class="qr"><canvas id="qrc"></canvas></div>
+        <div class="small">URLとルームIDを共有してください。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card viewer-only hidden">
+    <div class="small">視聴</div>
+    <video id="remote" playsinline autoplay controls></video>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+  <script src="./client.js"></script>
+</body>
+</html>
