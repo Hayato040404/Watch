@@ -97,10 +97,18 @@ function onSignal(ev) {
 btnShareScreen.addEventListener('click', async () => {
   try {
     const safariMode = document.getElementById('chkSafari').checked; // ← 新しいチェックボックス
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: 30 },
+    
+    // Safari用の設定を調整
+    const constraints = {
+      video: { 
+        frameRate: safariMode ? 15 : 30,  // Safariでは低めのフレームレートが安定
+        width: { max: safariMode ? 1280 : 1920 },
+        height: { max: safariMode ? 720 : 1080 }
+      },
       audio: safariMode ? false : true
-    });
+    };
+    
+    const stream = await navigator.mediaDevices.getDisplayMedia(constraints);
     onOwnerGotStream(stream);
   } catch (e) {
     alert('画面共有に失敗: ' + e.message);
@@ -149,10 +157,18 @@ function stopOwner() {
 }
 
 async function handleViewerOffer(viewerId, sdp) {
-  const pc = new RTCPeerConnection({
-    iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
-    // LAN最適化: デフォルトでhost候補も含まれる（HTTPS必須）。
-  });
+  // Safari互換性を向上させるRTCConfiguration
+  const config = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ],
+    iceCandidatePoolSize: 10,
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require'
+  };
+  
+  const pc = new RTCPeerConnection(config);
   state.peers.set(viewerId, pc);
 
   pc.onicecandidate = (e) => {
@@ -187,7 +203,16 @@ function replaceTracks(pc, stream) {
     const kind = track.kind;
     const sender = senders.find(s => s.track && s.track.kind === kind);
     if (sender) {
-      sender.replaceTrack(track);
+      sender.replaceTrack(track).catch(e => {
+        console.log('Track replacement failed:', e);
+        // SafariでreplaceTrackが失敗した場合の代替手段
+        try {
+          pc.removeTrack(sender);
+          pc.addTrack(track, stream);
+        } catch (fallbackError) {
+          console.log('Fallback track replacement also failed:', fallbackError);
+        }
+      });
     } else {
       pc.addTrack(track, stream);
     }
@@ -210,11 +235,28 @@ async function startViewer() {
 
   pc.ontrack = (ev) => {
     // Expecting one stream with A/V
-    remote.srcObject = ev.streams[0];
+    const stream = ev.streams[0];
+    remote.srcObject = stream;
+    
+    // Safari用の追加設定
+    remote.playsInline = true;
+    remote.muted = false;
+    
+    // 自動再生を確実にする
+    remote.play().catch(e => {
+      console.log('Auto-play prevented, user interaction required');
+    });
   };
 
   // Viewer does not send tracks (recvonly)
-  const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+  // Safari互換性のためのoffer設定
+  const offerOptions = {
+    offerToReceiveAudio: true,
+    offerToReceiveVideo: true,
+    voiceActivityDetection: false  // Safariでの問題を回避
+  };
+  
+  const offer = await pc.createOffer(offerOptions);
   await pc.setLocalDescription(offer);
   state.ws.send(JSON.stringify({ type: 'viewer-offer', roomId: state.roomId, sdp: pc.localDescription }));
 }
