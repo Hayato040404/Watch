@@ -96,15 +96,17 @@ function onSignal(ev) {
 // ===== Owner flow =====
 btnShareScreen.addEventListener('click', async () => {
   try {
+    const safariMode = document.getElementById('chkSafari').checked; // ← 新しいチェックボックス
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 30 },
-      audio: true // Tab共有時に音声可（ブラウザ依存）
+      audio: safariMode ? false : true
     });
     onOwnerGotStream(stream);
   } catch (e) {
     alert('画面共有に失敗: ' + e.message);
   }
 });
+
 
 btnShareCamera.addEventListener('click', async () => {
   try {
