@@ -1,290 +1,70 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>同時視聴（ローカル優先WebRTC）</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    body { margin: 0; padding: 16px; max-width: 960px; margin-inline: auto; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    h1 { font-size: 20px; margin: 0; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 12px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    input[type="text"] { padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 16px; }
+    button { padding: 10px 14px; border: 0; border-radius: 10px; font-size: 15px; cursor: pointer; }
+    video { width: 100%; max-height: 60vh; background: #000; border-radius: 12px; }
+    .small { font-size: 12px; color: #666; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .muted { opacity: .7; }
+    .qr { display: grid; place-items: center; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>同時視聴（同一Wi‑Fi最適化 / WebRTC）</h1>
+    <div class="small">Render等にデプロイ可・P2P（少人数向け）</div>
+  </header>
 
-// Minimal WebRTC signaling client for owner/viewer with per-viewer PeerConnections.
-// Works best for small rooms (P2P mesh). For larger rooms use an SFU (e.g., LiveKit).
+  <div class="card">
+    <div class="row">
+      <label><input type="radio" name="role" value="owner" checked> オーナー</label>
+      <label><input type="radio" name="role" value="viewer"> 視聴者</label>
+      <input id="roomId" type="text" placeholder="ルームID（例: 0429）" />
+      <button id="btnJoin">入室</button>
+    </div>
+    <div class="row small muted">
+      同じWi‑Fi内だとWebRTCがローカル候補（mDNS/host）を優先して低遅延になりやすいです。外出先でもOK。
+    </div>
+  </div>
 
-const $ = (sel) => document.querySelector(sel);
-const state = {
-  role: 'owner',
-  roomId: '',
-  ws: null,
-  id: null,
-  ownerStream: null,
-  // Owner: peer map per viewerId. Viewer: single pc.
-  peers: new Map(),
-};
+  <div class="card owner-only">
+    <div class="row">
+      <button id="btnShareScreen">画面を共有</button>
+      <label><input type="checkbox" id="chkSafari"> Safari互換モード（音声なし・低解像度）</label>
+      <button id="btnShareCamera">カメラを共有（スマホ可）</button>
+      <button id="btnStop" disabled>停止</button>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="small">送信プレビュー</div>
+        <video id="preview" playsinline autoplay muted></video>
+      </div>
+      <div>
+        <div class="small">QRで視聴者を招待（同一LANで便利）</div>
+        <div class="qr"><canvas id="qrc"></canvas></div>
+        <div class="small">URLとルームIDを共有してください。</div>
+      </div>
+    </div>
+  </div>
 
-// UI elements
-const roomInput = $('#roomId');
-const btnJoin = $('#btnJoin');
-const btnShareScreen = $('#btnShareScreen');
-const btnShareCamera = $('#btnShareCamera');
-const btnStop = $('#btnStop');
-const preview = $('#preview');
-const remote = $('#remote');
+  <div class="card viewer-only hidden">
+    <div class="small">視聴</div>
+    <video id="remote" playsinline autoplay controls></video>
+  </div>
 
-// role switch
-document.querySelectorAll('input[name="role"]').forEach(r => {
-  r.addEventListener('change', () => {
-    state.role = r.value;
-    updateRoleUI();
-  });
-});
-
-function updateRoleUI() {
-  document.querySelector('.owner-only').classList.toggle('hidden', state.role !== 'owner');
-  document.querySelector('.viewer-only').classList.toggle('hidden', state.role !== 'viewer');
-}
-
-updateRoleUI();
-
-btnJoin.addEventListener('click', async () => {
-  state.roomId = roomInput.value.trim();
-  if (!state.roomId) {
-    alert('ルームIDを入力してください');
-    return;
-  }
-  await ensureWS();
-  state.ws.send(JSON.stringify({ type: 'join-room', roomId: state.roomId, role: state.role }));
-  if (state.role === 'owner') makeQR();
-});
-
-async function ensureWS() {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) return;
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  state.ws = new WebSocket(`${proto}://${location.host}`);
-  state.ws.onmessage = onSignal;
-  await new Promise((res) => (state.ws.onopen = res));
-}
-
-function onSignal(ev) {
-  const msg = JSON.parse(ev.data);
-  // console.log('signal', msg);
-  switch (msg.type) {
-    case 'hello': state.id = msg.id; break;
-    case 'owner-ready':
-      if (state.role === 'viewer') {
-        startViewer();
-      }
-      break;
-    case 'viewer-offer':
-      if (state.role === 'owner') {
-        handleViewerOffer(msg.from, msg.sdp);
-      }
-      break;
-    case 'owner-answer':
-      if (state.role === 'viewer') {
-        state.pc?.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-      }
-      break;
-    case 'ice-candidate':
-      if (state.role === 'owner') {
-        const pc = state.peers.get(msg.from);
-        if (pc && msg.candidate) pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(()=>{});
-      } else if (state.role === 'viewer') {
-        if (msg.candidate) state.pc?.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(()=>{});
-      }
-      break;
-    case 'owner-left':
-      if (state.role === 'viewer') {
-        teardownViewer();
-        alert('オーナーが退出しました');
-      }
-      break;
-  }
-}
-
-// ===== Owner flow =====
-btnShareScreen.addEventListener('click', async () => {
-  try {
-    const safariMode = document.getElementById('chkSafari').checked; // ← 新しいチェックボックス
-    
-    // Safari用の設定を調整
-    const constraints = {
-      video: { 
-        frameRate: safariMode ? 15 : 30,  // Safariでは低めのフレームレートが安定
-        width: { max: safariMode ? 1280 : 1920 },
-        height: { max: safariMode ? 720 : 1080 }
-      },
-      audio: safariMode ? false : true
-    };
-    
-    const stream = await navigator.mediaDevices.getDisplayMedia(constraints);
-    onOwnerGotStream(stream);
-  } catch (e) {
-    alert('画面共有に失敗: ' + e.message);
-  }
-});
-
-
-btnShareCamera.addEventListener('click', async () => {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' },
-      audio: true
-    });
-    onOwnerGotStream(stream);
-  } catch (e) {
-    alert('カメラ取得に失敗: ' + e.message);
-  }
-});
-
-function onOwnerGotStream(stream) {
-  state.ownerStream = stream;
-  preview.srcObject = stream;
-  btnStop.disabled = false;
-
-  // If tracks end (e.g., user stops screen share), cleanup
-  stream.getTracks().forEach(t => t.addEventListener('ended', () => stopOwner()));
-
-  // For already connected viewers, replace tracks
-  for (const [vid, pc] of state.peers) {
-    replaceTracks(pc, stream);
-  }
-}
-
-btnStop.addEventListener('click', stopOwner);
-
-function stopOwner() {
-  btnStop.disabled = true;
-  if (state.ownerStream) {
-    state.ownerStream.getTracks().forEach(t => t.stop());
-    state.ownerStream = null;
-    preview.srcObject = null;
-  }
-  for (const [vid, pc] of state.peers) {
-    pc.getSenders().forEach(s => { try { pc.removeTrack(s); } catch {} });
-  }
-}
-
-async function handleViewerOffer(viewerId, sdp) {
-  // Safari互換性を向上させるRTCConfiguration
-  const config = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ],
-    iceCandidatePoolSize: 10,
-    bundlePolicy: 'max-bundle',
-    rtcpMuxPolicy: 'require'
-  };
-  
-  const pc = new RTCPeerConnection(config);
-  state.peers.set(viewerId, pc);
-
-  pc.onicecandidate = (e) => {
-    if (e.candidate) state.ws.send(JSON.stringify({
-      type: 'ice-candidate', roomId: state.roomId, to: viewerId, candidate: e.candidate
-    }));
-  };
-
-  // Add tracks if available
-  if (state.ownerStream) {
-    for (const track of state.ownerStream.getTracks()) {
-      pc.addTrack(track, state.ownerStream);
-    }
-  }
-
-  await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  state.ws.send(JSON.stringify({ type: 'owner-answer', roomId: state.roomId, to: viewerId, sdp: pc.localDescription }));
-
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
-      pc.close();
-      state.peers.delete(viewerId);
-    }
-  };
-}
-
-function replaceTracks(pc, stream) {
-  const senders = pc.getSenders();
-  for (const track of stream.getTracks()) {
-    const kind = track.kind;
-    const sender = senders.find(s => s.track && s.track.kind === kind);
-    if (sender) {
-      sender.replaceTrack(track).catch(e => {
-        console.log('Track replacement failed:', e);
-        // SafariでreplaceTrackが失敗した場合の代替手段
-        try {
-          pc.removeTrack(sender);
-          pc.addTrack(track, stream);
-        } catch (fallbackError) {
-          console.log('Fallback track replacement also failed:', fallbackError);
-        }
-      });
-    } else {
-      pc.addTrack(track, stream);
-    }
-  }
-}
-
-// ===== Viewer flow =====
-async function startViewer() {
-  teardownViewer(); // reset if needed
-  const pc = new RTCPeerConnection({
-    iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
-  });
-  state.pc = pc;
-
-  pc.onicecandidate = (e) => {
-    if (e.candidate) state.ws.send(JSON.stringify({
-      type: 'ice-candidate', roomId: state.roomId, candidate: e.candidate
-    }));
-  };
-
-  pc.ontrack = (ev) => {
-    // Expecting one stream with A/V
-    const stream = ev.streams[0];
-    remote.srcObject = stream;
-    
-    // Safari用の追加設定
-    remote.playsInline = true;
-    remote.muted = false;
-    
-    // 自動再生を確実にする
-    remote.play().catch(e => {
-      console.log('Auto-play prevented, user interaction required');
-    });
-  };
-
-  // Viewer does not send tracks (recvonly)
-  // Safari互換性のためのoffer設定
-  const offerOptions = {
-    offerToReceiveAudio: true,
-    offerToReceiveVideo: true,
-    voiceActivityDetection: false  // Safariでの問題を回避
-  };
-  
-  const offer = await pc.createOffer(offerOptions);
-  await pc.setLocalDescription(offer);
-  state.ws.send(JSON.stringify({ type: 'viewer-offer', roomId: state.roomId, sdp: pc.localDescription }));
-}
-
-function teardownViewer() {
-  if (state.pc) {
-    state.pc.getTransceivers?.().forEach(t => t.stop?.());
-    state.pc.close();
-    state.pc = null;
-  }
-  remote.srcObject = null;
-}
-
-// QR for invite
-function makeQR() {
-  const url = `${location.origin}${location.pathname}?room=${encodeURIComponent(state.roomId)}&role=viewer`;
-  const canvas = document.getElementById('qrc');
-  if (canvas) {
-    window.QRCode.toCanvas(canvas, url, { width: 240 }, (err) => {});
-  }
-}
-
-// Auto-fill from query
-const params = new URLSearchParams(location.search);
-if (params.get('room')) roomInput.value = params.get('room');
-if (params.get('role') === 'viewer') {
-  document.querySelector('input[value="viewer"]').checked = true;
-  state.role = 'viewer';
-  updateRoleUI();
-}
-
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+  <script src="./client.js"></script>
+</body>
+</html>
